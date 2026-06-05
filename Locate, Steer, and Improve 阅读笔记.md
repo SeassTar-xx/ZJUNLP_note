@@ -21,7 +21,7 @@
 ## 3. 总体框架
 ![Figure 1: Overview of Locate, Steer, and Improve](assets/actionable-mi-figure1.png)
 
-图 1 给出了本文的整体结构：先定义 decoder-only Transformer LLM 中可以被分析的 Interpretable Objects，再把方法分为 Localizing Methods 和 Steering Methods，最后连接到 Alignment、Capability 和 Efficiency 三类 model improvement application。这个图更适合作为阅读时的 navigation map：它说明本文的组织方式和主要术语关系，但各方法之间的边界、因果强度和实际效果还需要结合后文具体章节判断。
+图 1 给出了本文的整体结构：先定义 decoder-only Transformer LLM 中可以被分析的 Interpretable Objects，再把方法分为 Localizing Methods 和 Steering Methods，最后连接到 Alignment、Capability 和 Efficiency 三类 model improvement application。它说明了本文的组织方式和主要术语关系。
 
 - Core Interpretable Objects：
   - Token Embedding：输入 token 的表示，是模型处理语义和位置相关信息的起点。
