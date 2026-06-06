@@ -117,4 +117,103 @@
 - 前面已知：事实召回时，中层 MLP 很关键。
 - ROME登场动机/猜想：如果中层 MLP 真的参与事实召回，那事实可以以某种形式存储在 MLP 的权重里，并且可通过接修改这些权重来改事实。
 - ROME做的intervention：
-  - 直接修改 MLP 权重，即把当前事实 $t_c = (s, r, o_c)$ 改成新事实 $t_c = (s, r, o_c)$。
+  - 直接修改 MLP 权重，即把当前事实 $t_c = (s, r, o_c)$ 改成新事实 $t_c = (s, r, o_c)$，同时保持泛化性和特异性。
+
+## 10. Section 3.1: Rank-One Model Editing（ROME）: Viewing the Transformer MLP as an Associative Memory
+- 数学假设：
+  - 把 MLP 的第二层权重矩阵 $W_{\text{proj}}^{(l)}$ 看成一个“线性 key-value 记忆库”，则满足 $W_{\text{proj}}^{(l)}·K ≈ V$
+  - W_fc + 激活函数：把 subject 表示变成 key-like vector
+  - W_proj：把这个 key-like vector 映射成 value-like vector
+  - 可找到最优解W，使 $W = V K^+$，其中 $K^+$ 为 K 的伪逆。
+- 在不大幅破坏原有 key-value 记忆的前提下，插入一个新的 key-value pair $(k^*, v^*)$：
+  - $\mathop{\mathrm{minimize}}_{\hat W} \big\| \hat W K - V \big\| \quad \text{such that} \quad \hat W k^* = v^*$
+  - 目标一：尽量不破坏旧记忆（左边）
+  - 目标二：必须写入新事实（右边）
+- 新事实保证：
+  - $Λ = (v* - Wk*) / ((C^{-1}k*)^T k*)$
+  - 分子为当前输出和目标输出之间（residual error）
+  - $C = K K^T$，为旧 keys 的协方差矩阵，则 $C^{-1}k*$ 为写入方向校正，在考虑旧 keys 分布的情况下，选择一个尽量少干扰其他 keys 的写入方向。
+- rank one update：
+  - $\hat W = W + Λ(C^{-1}k*)^T$
+  - 两个向量外积得到的矩阵 rank 最多为 1
+- ROME全流程：
+  - Step 1: Choosing $k^*$ to Select the Subject
+    - 目的：
+      - 选择一个 key $k^*$，用于在 MLP memory 中选中要编辑的 subject。
+      - 因为前文 Causal Tracing 显示，factual recall 的关键位置在 last subject token 的 middle layer
+      - 所以 ROME 从 subject 最后一个 token 的中层 MLP 内部激活中提取 key。
+    - 具体做法：
+      - 输入包含 subject s 的文本；
+      - 在目标层 $l^*$ 和 subject 最后一个 token index i 处；
+      - 读取 MLP 内部经过非线性之后的 activation：
+          $k(x)=\sigma\left(W_{\mathrm{fc}}^{(l^*)}\gamma\left(a_{[x],i}^{(l^*)}+h_{[x],i}^{(l^*-1)}\right)\right)$
+      - 因为 subject 前面的上下文不同会影响其 hidden state，所以作者对多个随机前缀取平均：
+          $k^*=\frac{1}{N}\sum_{j=1}^{N}k(x_j+s)$
+      - 实际实现中，$x_j$ 是由模型生成的 50 个长度为 2 到 10 的随机 token sequences
+  - Step 2: Choosing $v^*$ to Recall the Fact
+    - 目的：
+      -选择一个 value $v^*$，让它能够表示新的 relation-object property：
+        $(r,o^*)$
+      作为 subject s 的新属性。
+    - ROME 不直接把 $v^*$ 设成目标 token embedding，而是通过优化找到一个 MLP output vector。
+    - 定义：
+      $v^*=\arg\min_z \mathcal{L}(z)$
+    - 优化目标：
+    $$
+      \mathcal{L}(z)
+      =
+      \frac{1}{N}\sum_{j=1}^{N}
+      -\log
+      \mathbb{P}_{G(m_i^{(l^*)}:=z)}
+      [o^*|x_j+p]
+      +
+      D_{\mathrm{KL}}
+      \left(
+      \mathbb{P}_{G(m_i^{(l^*)}:=z)}[x|p']
+      \|
+      \mathbb{P}_{G}[x|p']
+      \right)
+    $$
+    - 第一项：Maximizing $o^*$ probability
+    $$
+      \frac{1}{N}\sum_{j=1}^{N}
+      -\log
+      \mathbb{P}_{G(m_i^{(l^*)}:=z)}
+      [o^*|x_j+p]
+    $$
+      - 意思是：如果把目标 MLP output 替换成 z，模型应该更高概率预测目标 object $o^*$。
+      - 例如希望把：
+          $\text{The Space Needle is located in Seattle}$
+          改成：
+          $\text{The Space Needle is located in Paris}$
+          那么优化 z 时就要提升模型预测 “Paris” 的概率。
+    - 第二项：Controlling essence drift
+    $$
+      D_{\mathrm{KL}}
+      \left(
+      \mathbb{P}_{G(m_i^{(l^*)}:=z)}[x|p']
+      \|
+      \mathbb{P}_{G}[x|p']
+      \right)
+    $$
+      - 这里 p' 通常形如：
+          $\{subject\}\ \text{is a}$
+      - 作用是让编辑后的模型在描述 subject 基本属性时，尽量保持和原模型一致。
+      - 这可以防止模型不仅改变目标事实，还把 subject 的整体语义理解改坏，即控制 essence drift。
+    - 重要注意：
+      - Step 2 的优化并不直接修改模型权重。
+      - 它只是寻找一个合适的 value vector $v^*$，使得如果这个 vector 从目标 MLP 输出，模型就会倾向于预测新 object，同时尽量保持 subject 的其他性质不变。
+  - Step 3: Inserting the Fact
+    - 当前已经得到：
+        $(k^*,v^*)$
+        其中：
+        - $k^*$：用于选中 subject；
+        - $v^*$：用于表示新的 relation-object property。
+    - 最后一步是使用 rank-one update 修改目标中层 MLP 的 $W_{\mathrm{proj}}^{(l^*)}$：
+        $\hat W = W + \Lambda(C^{-1}k^*)^T$
+    - 修改后满足：
+        $\hat Wk^*=v^*$
+    - 这意味着：
+        - 当模型以后再次在目标层 MLP 中形成类似 $k^*$ 的 subject key 时；
+        - 新的 $W_{\mathrm{proj}}$ 会输出 $v^*$；
+        - 从而把新的 factual association 写入模型。
